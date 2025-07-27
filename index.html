@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>Screener Pivot High (1,1)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #loader { display: none; font-size: 18px; margin-bottom: 10px; }
+    .card {
+      border: 1px solid #ddd; border-radius: 6px; padding: 12px;
+      margin-bottom: 10px; box-shadow: 1px 1px 4px rgba(0,0,0,0.1);
+    }
+    .card h3 { margin: 0 0 8px; font-size: 16px; }
+    .card div { margin: 4px 0; font-size: 14px; }
+    .card a { font-size: 14px; color: #0366d6; text-decoration: none; margin-right: 8px; }
+  </style>
+</head>
+<body>
+
+  <div id="loader">Caricamento in corso…</div>
+  <div id="results"></div>
+
+  <script>
+    // ====== Parametri dello screener ======
+    const symbolsBinance = ["BTCUSDT","ETHUSDT","BNBUSDT","ADAUSDT"];
+    const symbolsBybit   = ["BTCUSDT","ETHUSDT","DOGEUSDT","SOLUSDT"];
+    const timeframes     = ["1m","5m","15m","1h","4h"];
+    const gainThreshold  = 2;        // guadagno minimo (%) nelle ultime 6 candele
+    const volumeThreshold= 100000;   // volume minimo (in quote asset) nelle ultime 24h
+
+    // ====== Helper: trova ultimo Pivot High 1,1 ======
+    function findLatestPivotHigh(bars) {
+      let pivot = null;
+      for (let i = 1; i < bars.length - 1; i++) {
+        const hi  = parseFloat(bars[i][2]);
+        const hiL = parseFloat(bars[i-1][2]);
+        const hiR = parseFloat(bars[i+1][2]);
+        if (hi > hiL && hi > hiR) {
+          pivot = { timestamp: bars[i][0], value: hi };
+        }
+      }
+      if (pivot) {
+        pivot.timestamp = new Date(pivot.timestamp).toISOString();
+      }
+      return pivot;
+    }
+
+    // ====== Throttle alert via localStorage ======
+    function canSendAlert(key) {
+      const last = localStorage.getItem(`alert_${key}`);
+      if (last && Date.now() - last < 15 * 60 * 1000) return false;
+      localStorage.setItem(`alert_${key}`, Date.now());
+      return true;
+    }
+
+    // ====== Invia alert Telegram (configura TELEGRAM_WEBHOOK_URL) ======
+    const TELEGRAM_WEBHOOK_URL = "https://api.telegram.org/bot<TUO_TOKEN>/sendMessage?chat_id=<TUO_CHAT>&text=";
+    function sendTelegramAlert(data, tf) {
+      const msg = 
+        `${data.exchange.toUpperCase()} ${data.symbol} (${tf})%0A` +
+        `Gain: ${data.gain}%0A` +
+        `24h: ${data.dailyChange}%0A` +
+        `PivotHigh: ${data.pivotHigh}%0A` +
+        `Close: ${data.close}%0A` +
+        `🔗 ${data.tradingViewUrl}`;
+      fetch(TELEGRAM_WEBHOOK_URL + encodeURIComponent(msg));
+    }
+
+    // ====== Link helper ======
+    function getTradingViewLink(symbol, interval, exchange) {
+      const s = symbol.replace(/USDT$/, "");
+      return { fallback: `https://www.tradingview.com/chart/?symbol=${exchange}:${s}&interval=${interval}` };
+    }
+    function getExchangeLink(symbol, exchange) {
+      if (exchange === "binance") return { fallback: `https://www.binance.com/en/trade/${symbol}` };
+      if (exchange === "bybit")   return { fallback: `https://www.bybit.com/spot/${symbol}` };
+      return { fallback: "#" };
+    }
+
+    // ====== UI ======
+    const loader    = document.getElementById("loader");
+    const container = document.getElementById("results");
+
+    function showLoading() { loader.style.display = "block"; }
+    function hideLoading() { loader.style.display = "none"; }
+
+    function appendResult(c) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <h3>${c.exchange.toUpperCase()} • ${c.symbol} • ${c.timestamp}</h3>
+        <div>Gain: ${c.gain}% | 24h: ${c.dailyChange}% | Vol: ${c.volume}</div>
+        <div>Open: ${c.open} | Close: ${c.close}</div>
+        <div>⚓ Pivot High (1,1): ${c.pivotHigh}</div>
+        <a href="${c.tradingViewUrl}" target="_blank">TradingView</a>
+        <a href="${c.exchangeUrl}"    target="_blank">Exchange</a>
+      `;
+      container.appendChild(card);
+    }
+
+    // ====== Screener Binance ======
+    async function getBinanceMaxGain(symbol, tf, gainTh, volTh) {
+      try {
+        const url  = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=100`;
+        const data = await (await fetch(url)).json();
+        if (!Array.isArray(data) || data.length < 3) return null;
+
+        const pivot = findLatestPivotHigh(data);
+        if (!pivot) return null;
+
+        const lastClose = parseFloat(data.at(-1)[4]);
+        if (lastClose >= pivot.value) return null;
+
+        let maxGain = -Infinity, bestIdx = data.length - 6;
+        for (let i = data.length - 6; i < data.length - 1; i++) {
+          const open  = parseFloat(data[i][1]);
+          const close = parseFloat(data[i][4]);
+          const g     = ((close - open) / open) * 100;
+          if (g > maxGain) { maxGain = g; bestIdx = i; }
+        }
+        if (maxGain < gainTh) return null;
+
+        const info = await (await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`)).json();
+        const vol  = parseFloat(info.quoteVolume || 0);
+        if (vol < volTh) return null;
+
+        const best = {
+          symbol,
+          exchange:    "binance",
+          gain:        maxGain.toFixed(2),
+          dailyChange: parseFloat(info.priceChangePercent).toFixed(2),
+          volume:      vol.toFixed(0),
+          pivotHigh:   pivot.value.toFixed(4),
+          pivotTs:     pivot.timestamp,
+          open:        parseFloat(data[bestIdx][1]).toFixed(4),
+          close:       parseFloat(data[bestIdx][4]).toFixed(4),
+          index:       data.length - 1 - bestIdx,
+          timestamp:   new Date(data[bestIdx][0]).toLocaleTimeString(),
+          tradingViewUrl: getTradingViewLink(symbol, tf, "BINANCE").fallback,
+          exchangeUrl:    getExchangeLink(symbol, "binance").fallback
+        };
+
+        if (canSendAlert(symbol)) sendTelegramAlert(best, tf);
+        return best;
+      } catch (e) {
+        console.error("Errore Binance", symbol, e);
+        return null;
+      }
+    }
+
+    // ====== Screener Bybit ======
+    async function getBybitMaxGain(symbol, tf, gainTh, volTh) {
+      try {
+        const mapInt = { "1":"1","5":"5","15":"15","30":"30","60":"60","240":"240","1D":"D","1W":"W","1M":"M" };
+        const int    = mapInt[tf] || "5";
+        const resK   = await fetch(
+          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${int}&limit=100`
+        );
+        const k      = await resK.json();
+        if (k.retCode !== 0 || !k.result?.list) return null;
+
+        const bars = k.result.list.map(r => [+r[0], r[1], r[2], r[3], r[4], r[5]]);
+        if (bars.length < 3) return null;
+
+        const pivot = findLatestPivotHigh(bars);
+        if (!pivot) return null;
+
+        const lastClose = parseFloat(bars.at(-1)[4]);
+        if (lastClose >= pivot.value) return null;
+
+        let maxGain = -Infinity, bestIdx = bars.length - 6;
+        for (let i = bars.length - 6; i < bars.length - 1; i++) {
+          const open  = parseFloat(bars[i][1]);
+          const close = parseFloat(bars[i][4]);
+          const g     = ((close - open) / open) * 100;
+          if (g > maxGain) { maxGain = g; bestIdx = i; }
+        }
+        if (maxGain < gainTh) return null;
+
+        const info = await (await fetch(
+          `https://api.bybit.com/v5/market/ticker?category=spot&symbol=${symbol}`
+        )).json();
+        let vol = 0, change = "0.00";
+        if (info.retCode === 0 && info.result.list.length) {
+          const row = info.result.list[0];
+          change = (parseFloat(row.price24hPcnt) * 100).toFixed(2);
+          vol    = parseFloat(row.turnover24h || 0);
+        }
+        if (vol < volTh) return null;
+
+        const best = {
+          symbol,
+          exchange:    "bybit",
+          gain:        maxGain.toFixed(2),
+          dailyChange: change,
+          volume:      vol.toFixed(0),
+          pivotHigh:   pivot.value.toFixed(4),
+          pivotTs:     pivot.timestamp,
+          open:        parseFloat(bars[bestIdx][1]).toFixed(4),
+          close:       parseFloat(bars[bestIdx][4]).toFixed(4),
+          index:       bars.length - 1 - bestIdx,
+          timestamp:   new Date(bars[bestIdx][0]).toLocaleTimeString(),
+          tradingViewUrl: getTradingViewLink(symbol, tf, "BYBIT").fallback,
+          exchangeUrl:    getExchangeLink(symbol, "bybit").fallback
+        };
+
+        if (canSendAlert(`BYBIT_${symbol}`)) sendTelegramAlert(best, tf);
+        return best;
+      } catch (e) {
+        console.error("Errore Bybit", symbol, e);
+        return null;
+      }
+    }
+
+    // ====== Esecuzione Screener ======
+    async function runScreener() {
+      container.innerHTML = "";
+      showLoading();
+
+      const results = [];
+      for (const tf of timeframes) {
+        const calls = [
+          ...symbolsBinance.map(sym => getBinanceMaxGain(sym, tf, gainThreshold, volumeThreshold)),
+          ...symbolsBybit.map(sym =>   getBybitMaxGain(sym,   tf, gainThreshold, volumeThreshold))
+        ];
+        const arr = await Promise.all(calls);
+        arr.filter(r => r).forEach(r => results.push(r));
+      }
+
+      hideLoading();
+      // ordina per gain decrescente e mostra
+      results.sort((a, b) => parseFloat(b.gain) - parseFloat(a.gain));
+      results.forEach(appendResult);
+    }
+
+    // Avvia lo screener al caricamento
+    runScreener();
+
+  </script>
+</body>
+</html> 
