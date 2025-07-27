@@ -2,27 +2,45 @@
 <html lang="it">
 <head>
   <meta charset="UTF-8" />
-  <title>Crypto Sniper con Pivot High</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Crypto Sniper – Pivot High Configurabile</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; background: #121212; color: #eee; }
-    #controls { margin-bottom: 15px; }
-    select, input { padding: 5px; margin-right: 10px; }
-    button { padding: 6px 12px; cursor: pointer; }
-    #status { margin-bottom: 10px; }
+    body { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 0; padding: 10px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; justify-content: center; }
+    label, select, input, button { font-size: 14px; }
+    select, input[type=number] { padding: 6px; border-radius: 4px; border: 1px solid #555; background: #333; color: #eee; }
+    button { padding: 6px 12px; border:none; border-radius:4px; background:#4caf50; color:#fff; cursor:pointer; }
+    button:hover { background: #45a049; }
+    #status { text-align:center; padding:8px; margin-bottom:10px; background:#333; border-radius:4px; }
+    #status.active { background: linear-gradient(90deg,#00ff88,#00cc66); color:#000; }
     #results .coin { 
-      background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 4px; 
+      background: linear-gradient(135deg,#222,#333); 
+      padding:12px; margin-bottom:10px; border-radius:6px; 
+      cursor:pointer; border-left:4px solid #00ff88; 
+      transition: transform .2s;
     }
-    .exchange-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; color: #fff; margin-bottom: 4px; }
-    .exchange-badge.binance { background: #f3ba2f; }
-    .exchange-badge.bybit   { background: #f24b2a; }
-    .gain { color: #4caf50; }
-    a { color: #66b0ff; text-decoration: none; }
-    a.exchange-link.bybit   { color: #f24b2a; }
-    a.exchange-link.binance { color: #f3ba2f; }
+    .coin.bybit   { border-color: #f7931a; }
+    .coin.binance { border-color: #f3ba2f; }
+    .coin:hover { transform: translateX(5px); }
+    .exchange-badge { display:inline-block; padding:4px 8px; border-radius:12px; font-size:11px; margin-bottom:8px; }
+    .exchange-badge.binance { background:#f3ba2f; color:#000; }
+    .exchange-badge.bybit   { background:#f7931a; color:#000; }
+    .gain { color:#00ff88; font-weight:bold; }
+    .tradingview-link, .exchange-link {
+      display:inline-block; padding:4px 8px; border-radius:4px; font-size:12px; text-decoration:none; margin-right:6px;
+    }
+    .tradingview-link { background:#1e88e5; color:#fff; }
+    .exchange-link.binance { background:#f3ba2f; color:#000; }
+    .exchange-link.bybit   { background:#f7931a; color:#000; }
+    .screenshot-note { margin-top:8px; font-size:12px; color:#aaa; }
   </style>
 </head>
 <body>
-  <div id="controls">
+
+  <h1>📈 Crypto Sniper – Pivot High Configurabile</h1>
+  <div id="status">⏸ In attesa di avvio…</div>
+
+  <div class="controls">
     <label>
       Timeframe:
       <select id="timeframe">
@@ -35,337 +53,261 @@
         <option value="1d">1d</option>
       </select>
     </label>
+
     <label>
-      Threshold (%):
-      <input id="threshold" type="number" step="0.1" value="3.0" />
+      Soglia Gain (%):
+      <input type="number" id="threshold" value="3.0" step="0.1" min="0"/>
     </label>
+
+    <label>
+      Pivot Left (N):
+      <input type="number" id="pivotLeft" value="2" step="1" min="1"/>
+    </label>
+
+    <label>
+      Pivot Right (M):
+      <input type="number" id="pivotRight" value="1" step="1" min="1"/>
+    </label>
+
     <button id="startBtn">▶ Avvia Analisi</button>
   </div>
 
-  <div id="status">In attesa di avvio...</div>
   <div id="results"></div>
 
   <script>
-    // === CONFIG TELEGRAM ===
-    const TELEGRAM_TOKEN   = 'YOUR_TELEGRAM_BOT_TOKEN';
-    const TELEGRAMCHATID   = 'YOUR_TELEGRAM_CHAT_ID';
+  // === TELEGRAM CONFIG ===
+  const TELEGRAM_TOKEN  = 'TUO_TELEGRAM_BOT_TOKEN';
+  const TELEGRAM_CHAT_ID= 'TUO_CHAT_ID';
 
-    // === STATO GLOBALE ===
-    let allSymbols      = [];
-    let currentIndex    = 0;
-    const batchSize     = 5;
-    let cycleStartTime;
-    let wakeLock        = null;
+  // === STATO GLOBALE ===
+  let allSymbols     = [];
+  let currentIndex   = 0;
+  const batchSize    = 150;
+  let cycleStartTime = null;
+  let wakeLock       = null;
 
-    // === UTILITIES UI ===
-    function updateStatus(msg) {
-      document.getElementById('status').textContent = msg;
-    }
+  // === UTILITY STATUS ===
+  function updateStatus(msg, active=false) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = active ? 'active' : '';
+  }
 
-    async function requestWakeLock() {
+  // === WAKE LOCK ===
+  async function requestWakeLock() {
+    try {
       if ('wakeLock' in navigator) {
-        try { wakeLock = await navigator.wakeLock.request('screen'); }
-        catch (e) { console.error('WakeLock error:', e); }
+        wakeLock = await navigator.wakeLock.request('screen');
+        updateStatus('🔒 Wake Lock attivo', true);
       }
+    } catch (e) {
+      console.error('WakeLock error', e);
     }
+  }
+  document.addEventListener('visibilitychange', ()=>{
+    if (!document.hidden && wakeLock===null) requestWakeLock();
+  });
 
-    // === FUNZIONE PIVOT HIGH (2,1) ===
-    function isPivotHigh(klines, i) {
-      if (i < 2 || i + 1 >= klines.length) return false;
-      const h0 = parseFloat(klines[i][2]);   // high corrente
-      const h1 = parseFloat(klines[i-1][2]); // high t-1
-      const h2 = parseFloat(klines[i-2][2]); // high t-2
-      const hF = parseFloat(klines[i+1][2]); // high t+1
-      return (h0 > h1 && h0 > h2 && h0 > hF);
+  // === PIVOT HIGH DYNAMIC (N, M) ===
+  function isPivotHigh(klines, i, left, right) {
+    if (i < left || i + right >= klines.length) return false;
+    const h0 = parseFloat(klines[i][2]);
+    for (let j = 1; j <= left; j++) {
+      if (parseFloat(klines[i-j][2]) >= h0) return false;
     }
+    for (let k = 1; k <= right; k++) {
+      if (parseFloat(klines[i+k][2]) >= h0) return false;
+    }
+    return true;
+  }
 
-    // === FUNZIONI LINK ===
-    function getTradingViewInterval(interval) {
-      const map = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D','1w':'1W','1M':'1M' };
-      return map[interval] || '5';
+  // === LINK HELPERS ===
+  function getTradingViewInterval(interval) {
+    const map = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D' };
+    return map[interval]||'5';
+  }
+  function getTradingViewLink(symbol, interval, exch) {
+    const tvI = getTradingViewInterval(interval);
+    return `https://www.tradingview.com/chart/?symbol=${exch}:${symbol}&interval=${tvI}&theme=dark`;
+  }
+  function getExchangeLink(symbol, exch) {
+    if (exch==='binance') {
+      const base = symbol.replace('USDC','');
+      return `https://www.binance.com/en/trade/${base}_USDC`;
     }
-    function getTradingViewLink(symbol, interval, exchange='BINANCE') {
-      const tvI = getTradingViewInterval(interval);
-      return {
-        deepLink: null,
-        fallback: `https://www.tradingview.com/chart/?symbol=${exchange}:${symbol}&interval=${tvI}&theme=dark`
+    if (exch==='bybit') {
+      return `https://www.bybit.com/en/trade/spot/${symbol}`;
+    }
+    return '#';
+  }
+  function launchLink(url) { window.open(url,'_blank'); }
+
+  // === ANALISI BINANCE ===
+  async function getBinanceMaxGain(sym, tf, threshold, left, right) {
+    try {
+      const res  = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${tf}&limit=6`);
+      const data = await res.json();
+      if (!data || data.length<6) return null;
+
+      let maxGain= -Infinity, best=null;
+      for (let i=1;i<=5;i++) {
+        if (!isPivotHigh(data,i,left,right)) continue;
+        const open = +data[i][1], close=+data[i][4];
+        const gain = ((close-open)/open)*100;
+        if (gain>maxGain) {
+          maxGain = gain;
+          best    = { idx:i, open, close, gain, pivotVal:+data[i][2], pivotTs:data[i][0] };
+        }
+      }
+      if (!best || best.gain<threshold) return null;
+
+      // dettaglio 24h
+      const info = await (await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`)).json();
+      const dailyChange = parseFloat(info.priceChangePercent).toFixed(2);
+      const result = {
+        symbol: sym, exchange:'binance',
+        gain: best.gain.toFixed(2), dailyChange,
+        open:best.open.toFixed(4), close:best.close.toFixed(4),
+        index: best.idx, timestamp:new Date(data[best.idx][0]).toLocaleTimeString(),
+        pivotValue: best.pivotVal.toFixed(4),
+        pivotTime: new Date(best.pivotTs).toLocaleString(),
+        tradingViewUrl: getTradingViewLink(sym,tf,'BINANCE'),
+        exchangeUrl:    getExchangeLink(sym,'binance')
       };
-    }
-    function getExchangeLink(symbol, exchange) {
-      if (exchange.toLowerCase()==='binance') {
-        const base = symbol.replace("USDC","");
-        return { deepLink: null, fallback: `https://www.binance.com/en/trade/${base}_USDC` };
-      }
-      if (exchange.toLowerCase()==='bybit') {
-        return { deepLink: null, fallback: `https://www.bybit.com/en/trade/spot/${symbol}` };
-      }
-      return { deepLink: null, fallback: "#" };
-    }
-    function launchApp(deepLink, fallback) {
-      window.open(fallback, "_blank");
-    }
+      return result;
+    } catch(e){ console.error('Err Binance',e); return null; }
+  }
 
-    // === ANALISI BINANCE ===
-    async function getBinanceMaxGain(symbol, tf, threshold) {
-      try {
-        const res  = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=6`);
-        const data = await res.json();
-        if (!data || data.length < 6) return null;
+  // === ANALISI BYBIT ===
+  async function getBybitMaxGain(sym, tf, threshold, left, right) {
+    try {
+      const intMap = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D' };
+      const interval = intMap[tf]||'5';
+      const res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${interval}&limit=6`);
+      const j   = await res.json();
+      if (j.retCode!==0||!j.result?.list) return null;
+      const data = j.result.list.reverse();
 
-        let maxGain    = -Infinity;
-        let bestCandle = null;
-
-        for (let i = 1; i <= 5; i++) {
-          if (!isPivotHigh(data, i)) {
-            console.log(`Binance ${symbol} candela ${i}: non pivot high`);
-            continue;
-          }
-          const open  = parseFloat(data[i][1]);
-          const close = parseFloat(data[i][4]);
-          const gain  = ((close - open) / open) * 100;
-          console.log(`Binance ${symbol} candela ${i} (Pivot High): gain=${gain.toFixed(2)}%`);
-          if (gain > maxGain) {
-            maxGain    = gain;
-            bestCandle = {
-              symbol, exchange: 'binance',
-              gain: gain.toFixed(2),
-              open, close,
-              index: i,
-              timestamp: new Date(data[i][0]).toLocaleTimeString()
-            };
-          }
+      let maxGain= -Infinity, best=null;
+      for (let i=1;i<=5;i++){
+        if (!isPivotHigh(data,i,left,right)) continue;
+        const open=+data[i][1], close=+data[i][4];
+        const gain=((close-open)/open)*100;
+        if (gain>maxGain) {
+          maxGain = gain;
+          best    = { idx:i, open, close, gain, pivotVal:+data[i][2], pivotTs:+data[i][0] };
         }
-
-        if (bestCandle && maxGain >= threshold) {
-          // aggiungo dailyChange
-          try {
-            const infoRes = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
-            const info    = await infoRes.json();
-            bestCandle.dailyChange = parseFloat(info.priceChangePercent).toFixed(2);
-          } catch { bestCandle.dailyChange = "N/A"; }
-
-          // link
-          const tv = getTradingViewLink(symbol, tf, 'BINANCE');
-          const ex = getExchangeLink(symbol, 'binance');
-          bestCandle.tradingViewUrl = tv.fallback;
-          bestCandle.exchangeUrl    = ex.fallback;
-
-          if (canSendAlert(symbol)) sendTelegramAlert(bestCandle, tf);
-          return bestCandle;
-        }
-        return null;
-      } catch (e) {
-        console.error('Errore Binance per', symbol, e);
-        return null;
       }
+      if (!best || best.gain<threshold) return null;
+
+      // dettaglio 24h
+      const info = await (await fetch(`https://api.bybit.com/v5/market/ticker?category=spot&symbol=${sym}`)).json();
+      const pct  = j.retCode===0&&info.result?.list?.length
+                   ? (parseFloat(info.result.list[0].price24hPcnt)*100).toFixed(2)
+                   : 'N/A';
+      const result = {
+        symbol: sym, exchange:'bybit',
+        gain: best.gain.toFixed(2), dailyChange:pct,
+        open:best.open.toFixed(4), close:best.close.toFixed(4),
+        index: best.idx, timestamp:new Date(best.pivotTs).toLocaleTimeString(),
+        pivotValue: best.pivotVal.toFixed(4),
+        pivotTime: new Date(best.pivotTs).toLocaleString(),
+        tradingViewUrl: getTradingViewLink(sym,tf,'BYBIT'),
+        exchangeUrl:    getExchangeLink(sym,'bybit')
+      };
+      return result;
+    } catch(e){ console.error('Err Bybit',e); return null; }
+  }
+
+  // === LISTE SIMBOLI ===
+  async function getBinanceSymbolList() {
+    const j = await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json();
+    return j.symbols.filter(s=>s.symbol.endsWith("USDC")&&s.status==="TRADING").map(s=>s.symbol);
+  }
+  async function getBybitSymbolList() {
+    const j = await (await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot")).json();
+    return j.result?.list
+      .filter(s=>s.symbol.endsWith("USDT")&&s.status==="Trading")
+      .map(s=>s.symbol) || [];
+  }
+
+  // === RENDER ===
+  function appendResult(c) {
+    const box = document.getElementById('results');
+    const el  = document.createElement('div');
+    el.className = `coin ${c.exchange}`;
+    el.innerHTML = `
+      <div class="exchange-badge ${c.exchange}">${c.exchange.toUpperCase()}</div>
+      <div><strong>💰 ${c.symbol}</strong></div>
+      <div>📊 Gain: <span class="gain">+${c.gain}%</span> | 24h: ${c.dailyChange}%</div>
+      <div>🟢 Open: ${c.open} | 🔴 Close: ${c.close}</div>
+      <div>⚓ Pivot High: ${c.pivotValue} @ ${c.pivotTime}</div>
+      <div>🕒 Index: ${c.index} | 🕰️ ${c.timestamp}</div>
+      <div style="margin-top:8px;">
+        <a class="tradingview-link" href="#" onclick="launchLink('${c.tradingViewUrl}');return false;">TradingView</a>
+        <a class="exchange-link ${c.exchange}" href="#" onclick="launchLink('${c.exchangeUrl}');return false;">Exchange</a>
+      </div>
+      <div class="screenshot-note"></div>
+    `;
+    box.appendChild(el);
+  }
+
+  // === CICLO PRINCIPALE ===
+  async function cycleProcessing() {
+    const tf         = document.getElementById('timeframe').value;
+    const threshold  = parseFloat(document.getElementById('threshold').value)||0;
+    const left       = parseInt(document.getElementById('pivotLeft').value)||2;
+    const right      = parseInt(document.getElementById('pivotRight').value)||1;
+    document.getElementById('results').innerHTML = '';
+    updateStatus('⏳ Caricamento simboli...', true);
+    
+    if (!allSymbols.length) {
+      const [bn,by] = await Promise.all([
+        getBinanceSymbolList(), getBybitSymbolList()
+      ]);
+      allSymbols = [
+        ...bn.map(s=>({exchange:'binance',symbol:s})),
+        ...by.map(s=>({exchange:'bybit',symbol:s}))
+      ];
+    }
+    currentIndex    = 0;
+    cycleStartTime  = new Date();
+    updateStatus(`🔄 Inizio ciclo: 0/${allSymbols.length}`, true);
+
+    await processBatch(tf, threshold, left, right);
+  }
+
+  async function processBatch(tf, threshold, left, right) {
+    const total = allSymbols.length;
+    const batch = allSymbols.slice(currentIndex, currentIndex+batchSize);
+
+    for (let i=0; i<batch.length; i++) {
+      const { exchange, symbol } = batch[i];
+      const fn = exchange==='binance'
+                 ? getBinanceMaxGain
+                 : getBybitMaxGain;
+      const res = await fn(symbol, tf, threshold, left, right);
+      if (res) appendResult(res);
+
+      const done = currentIndex + i + 1;
+      const pct  = ((done/total)*100).toFixed(1);
+      const sec  = Math.floor((Date.now()-cycleStartTime)/1000);
+      updateStatus(`🔄 Elaborate ${done}/${total} (${pct}%) – ${sec}s`, true);
+      await new Promise(r=>setTimeout(r,60));
     }
 
-    // === ANALISI BYBIT ===
-    async function getBybitMaxGain(symbol, tf, threshold) {
-      try {
-        const byInt = getTradingViewInterval(tf).toLowerCase();
-        const res   = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${byInt}&limit=6`);
-        const data  = await res.json();
-        if (data.retCode !== 0 || !data.result?.list || data.result.list.length < 6) return null;
-
-        let klines     = data.result.list.reverse();
-        let maxGain    = -Infinity;
-        let bestCandle = null;
-
-        for (let i = 1; i <= 5; i++) {
-          if (!isPivotHigh(klines, i)) {
-            console.log(`Bybit ${symbol} candela ${i}: non pivot high`);
-            continue;
-          }
-          const open  = parseFloat(klines[i][1]);
-          const close = parseFloat(klines[i][4]);
-          const gain  = ((close - open) / open) * 100;
-          console.log(`Bybit ${symbol} candela ${i} (Pivot High): gain=${gain.toFixed(2)}%`);
-          if (gain > maxGain) {
-            maxGain    = gain;
-            bestCandle = {
-              symbol, exchange: 'bybit',
-              gain: gain.toFixed(2),
-              open, close,
-              index: i,
-              timestamp: new Date(parseInt(klines[i][0])).toLocaleTimeString()
-            };
-          }
-        }
-
-        if (bestCandle && maxGain >= threshold) {
-          try {
-            const infoRes = await fetch(`https://api.bybit.com/v5/market/ticker?category=spot&symbol=${symbol}`);
-            const info    = await infoRes.json();
-            const pct     = parseFloat(info.result.list[0].price24hPcnt) * 100;
-            bestCandle.dailyChange = pct.toFixed(2);
-          } catch { bestCandle.dailyChange = "N/A"; }
-
-          const tv = getTradingViewLink(symbol, tf, 'BYBIT');
-          const ex = getExchangeLink(symbol, 'bybit');
-          bestCandle.tradingViewUrl = tv.fallback;
-          bestCandle.exchangeUrl    = ex.fallback;
-
-          if (canSendAlert(`BYBIT_${symbol}`)) sendTelegramAlert(bestCandle, tf);
-          return bestCandle;
-        }
-        return null;
-      } catch (e) {
-        console.error('Errore Bybit per', symbol, e);
-        return null;
-      }
+    currentIndex += batchSize;
+    if (currentIndex < total) {
+      await processBatch(tf, threshold, left, right);
+    } else {
+      const totSec = Math.floor((Date.now()-cycleStartTime)/1000);
+      updateStatus(`✅ Ciclo finito in ${totSec}s. Riavvio tra 3s…`);
+      allSymbols = [];
+      setTimeout(cycleProcessing,3000);
     }
+  }
 
-    // === ALERT TELEGRAM ===
-    function canSendAlert(key) {
-      // placeholder per limitare ripetizioni
-      return true;
-    }
-    async function sendTelegramAlert(data, tf) {
-      const icon  = data.exchange === 'bybit' ? '🟠' : '🟡';
-      const name  = data.exchange.toUpperCase();
-      const quote = data.exchange === 'bybit' ? 'USDT' : 'USDC';
-      const msg = `🚨 CRYPTO SNIPER ALERT 🚨
-${icon} Exchange: ${name}
-🔸 Coin: ${data.symbol}
-💰 Quote: ${quote}
-🔸 Timeframe: ${tf}
-🔸 Gain: ${data.gain}%
-📆 24h: ${data.dailyChange}%
-🕒 Candela n° ${data.index + 1}
-🟢 Open: ${data.open}
-🔴 Close: ${data.close}
-⏰ Timestamp: ${data.timestamp}
-TradingView: ${data.tradingViewUrl}
-🔗 ${name} Trading: ${data.exchangeUrl}`;
-
-      const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-      try {
-        await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: TELEGRAMCHATID,
-            text: msg,
-            parse_mode: 'HTML',
-            disable_web_page_preview: false
-          })
-        });
-        console.log(`Alert inviato per ${name}:${data.symbol}`);
-      } catch (err) {
-        console.error('Errore invio Telegram:', err);
-      }
-    }
-
-    // === LISTE SIMBOLI ===
-    async function getBinanceSymbolListForSniper() {
-      try {
-        const res  = await fetch("https://api.binance.com/api/v3/exchangeInfo");
-        const data = await res.json();
-        return data.symbols
-          .filter(s => s.symbol.endsWith("USDC") && s.status === "TRADING")
-          .map(s => s.symbol);
-      } catch (e) {
-        console.error("Errore Binance lista:", e);
-        return [];
-      }
-    }
-    async function getBybitSymbolListForSniper() {
-      try {
-        const res  = await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot");
-        const data = await res.json();
-        if (data.retCode===0 && data.result?.list) {
-          return data.result.list
-            .filter(s => s.symbol.endsWith("USDT") && s.status === "Trading")
-            .map(s => s.symbol);
-        }
-        return [];
-      } catch (e) {
-        console.error("Errore Bybit lista:", e);
-        return [];
-      }
-    }
-
-    // === APPEND RISULTATI ===
-    function appendResult(candle) {
-      const container = document.getElementById("results");
-      const el = document.createElement("div");
-      el.className = `coin ${candle.exchange}`;
-      el.innerHTML = `
-        <div class="exchange-badge ${candle.exchange}">${candle.exchange.toUpperCase()}</div>
-        <div><strong>💰 ${candle.symbol}</strong> ${candle.exchange==='bybit'?'(USDT)':'(USDC)'}</div>
-        <div>📊 Gain: <span class="gain">+${candle.gain}%</span> | 📆 24h: ${candle.dailyChange}%</div>
-        <div>🕒 Candela n° ${candle.index + 1} | ⏰ ${candle.timestamp}</div>
-        <div>🟢 Open: ${candle.open} | 🔴 Close: ${candle.close}</div>
-        <div style="margin-top:10px;">
-          <a href="#" onclick="launchApp('','${candle.tradingViewUrl}');return false;">📊 TradingView</a>
-          &nbsp;
-          <a href="#" class="exchange-link ${candle.exchange}"
-             onclick="launchApp('','${candle.exchangeUrl}');return false;">
-            🔗 ${candle.exchange.toUpperCase()} Trading
-          </a>
-        </div>`;
-      container.appendChild(el);
-    }
-
-    // === CICLO PRINCIPALE ===
-    async function cycleProcessing() {
-      const tf        = document.getElementById("timeframe").value;
-      const threshold = parseFloat(document.getElementById("threshold").value) || 3.0;
-      document.getElementById("results").innerHTML = "";
-      updateStatus("Caricamento simboli...");
-      if (!allSymbols.length) {
-        const [bn, by] = await Promise.all([
-          getBinanceSymbolListForSniper(),
-          getBybitSymbolListForSniper()
-        ]);
-        allSymbols = [
-          ...bn.map(s=>({exchange:'binance',symbol:s})),
-          ...by.map(s=>({exchange:'bybit',symbol:s}))
-        ];
-      }
-      currentIndex    = 0;
-      cycleStartTime  = new Date();
-      updateStatus(`Inizio ciclo: 0/${allSymbols.length} elaborati.`);
-      await processBatch(tf, threshold);
-    }
-
-    async function processBatch(tf, threshold) {
-      const total = allSymbols.length;
-      const batch = allSymbols.slice(currentIndex, currentIndex + batchSize);
-
-      for (let i = 0; i < batch.length; i++) {
-        const { exchange, symbol } = batch[i];
-        const fn = exchange==='binance'
-                   ? getBinanceMaxGain
-                   : getBybitMaxGain;
-        const res = await fn(symbol, tf, threshold);
-        if (res) appendResult(res);
-
-        const done = currentIndex + i + 1;
-        const pct  = ((done/total)*100).toFixed(1);
-        const sec  = Math.floor((new Date() - cycleStartTime)/1000);
-        updateStatus(`Elaborate ${done}/${total} (${pct}%). Tempo: ${sec}s.`);
-        await new Promise(r=>setTimeout(r,60));
-      }
-
-      currentIndex += batchSize;
-      if (currentIndex < total) {
-        await processBatch(tf, threshold);
-      } else {
-        const totSec = Math.floor((new Date() - cycleStartTime)/1000);
-        updateStatus(`Ciclo completato in ${totSec}s. Riavvio tra 3s...`);
-        allSymbols = [];
-        setTimeout(cycleProcessing,3000);
-      }
-    }
-
-    // === INIZIALIZZAZIONE ===
-    document.getElementById('startBtn').addEventListener('click', cycleProcessing);
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && wakeLock===null) requestWakeLock();
-    });
+  document.getElementById('startBtn').addEventListener('click', cycleProcessing);
   </script>
 </body>
-</html>
-```[43dcd9a7-70db-4a1f-b0ae-981daa162054](https://github.com/MasonHalstead/skybase/tree/a39deec95e986c139e04d6bf686222f3fcd40343/services%2Fkraken.js?citationMarker=43dcd9a7-70db-4a1f-b0ae-981daa162054 "1") 
+</html> 
