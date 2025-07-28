@@ -74,23 +74,30 @@
   <div id="results"></div>
 
   <script>
+    // Stato e mappa dei risultati
     let allSymbols = [];
     let currentIndex = 0;
     const batchSize = 150;
     let cycleStart = 0;
     const resultsMap = new Map();
 
+    // Funzione per aggiornare lo status
     function updateStatus(msg, active = false) {
       const el = document.getElementById('status');
       el.textContent = msg;
       el.className = active ? 'active' : '';
     }
 
+    // Mappa timeframe per TradingView
     function getTVInterval(iv) {
-      const m = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D' };
+      const m = {
+        '1m':'1','5m':'5','15m':'15','30m':'30',
+        '1h':'60','4h':'240','1d':'1D'
+      };
       return m[iv] || '5';
     }
 
+    // Render del MiniChartWidget ufficiale di TradingView
     function renderTVMiniChart(exchange, symbol, interval, containerId) {
       if (!window.TradingView) {
         console.error('TradingView non caricato');
@@ -107,6 +114,7 @@
       });
     }
 
+    // Ordina i risultati dal DOM per distanza ascendente
     function sortResultsByDistance() {
       const parent = document.getElementById('results');
       Array.from(parent.children)
@@ -114,6 +122,7 @@
         .forEach(el => parent.appendChild(el));
     }
 
+    // Inserisce o aggiorna un risultato
     function upsertResult(c) {
       const key = `${c.exchange}|${c.symbol}`;
       const parent = document.getElementById('results');
@@ -156,46 +165,57 @@
       sortResultsByDistance();
     }
 
-    async function getBinanceSymbols() {
-      const j = await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json();
-      return j.symbols.filter(s => s.symbol.endsWith("USDC") && s.status === "TRADING").map(s => s.symbol);
-    }
-
-    async function getBybitSymbols() {
-      const j = await (await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot")).json();
-      return j.result.list.filter(s => s.symbol.endsWith("USDT") && s.status === "Trading").map(s => s.symbol);
-    }
-
+    // Funzioni stub: integra qui la tua logica pivot/gain/distance
     async function getBinanceMaxGain(sym, iv, left, right, gEn, gTh, dEn, dTh) {
-      // ... integra la tua logica ...
+      // fetch + calcoli pivot/gain/distance…
+      // ritorna { symbol, exchange:'binance', gain, dailyChange,
+      //          open, close, pivotValue, pivotTime, distance,
+      //          index, timestamp, tradingViewUrl, exchangeUrl, timeframe: iv }
       return null;
     }
-
     async function getBybitMaxGain(sym, iv, left, right, gEn, gTh, dEn, dTh) {
-      // ... integra la tua logica ...
+      // similare a getBinanceMaxGain ma per Bybit
       return null;
     }
 
+    // Fetch dei simboli
+    async function getBinanceSymbols() {
+      const res = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+      const j = await res.json();
+      return j.symbols
+        .filter(s => s.symbol.endsWith('USDC') && s.status === 'TRADING')
+        .map(s => s.symbol);
+    }
+    async function getBybitSymbols() {
+      const res = await fetch('https://api.bybit.com/v5/market/instruments-info?category=spot');
+      const j = await res.json();
+      return j.result.list
+        .filter(s => s.symbol.endsWith('USDT') && s.status === 'Trading')
+        .map(s => s.symbol);
+    }
+
+    // Ciclo principale
     async function cycleProcessing() {
-      const iv = document.getElementById('timeframe').value;
-      const gEn = document.getElementById('enableGain').checked;
-      const gTh = parseFloat(document.getElementById('threshold').value) || 0;
-      const left = parseInt(document.getElementById('pivotLeft').value) || 2;
-      const right = parseInt(document.getElementById('pivotRight').value) || 1;
-      const dEn = document.getElementById('enableDist').checked;
-      const dTh = parseFloat(document.getElementById('distThreshold').value) || 100;
+      const iv    = document.getElementById('timeframe').value;
+      const gEn   = document.getElementById('enableGain').checked;
+      const gTh   = parseFloat(document.getElementById('threshold').value) || 0;
+      const left  = parseInt(document.getElementById('pivotLeft').value)    || 2;
+      const right = parseInt(document.getElementById('pivotRight').value)   || 1;
+      const dEn   = document.getElementById('enableDist').checked;
+      const dTh   = parseFloat(document.getElementById('distThreshold').value) || 100;
 
       updateStatus('⏳ Caricamento simboli…', true);
       if (!allSymbols.length) {
         const [bn, by] = await Promise.all([getBinanceSymbols(), getBybitSymbols()]);
-        allSymbols = [...bn.map(s => ({exchange:'binance',symbol:s})), 
-                      ...by.map(s => ({exchange:'bybit',symbol:s}))];
+        allSymbols = [
+          ...bn.map(s => ({ exchange:'binance', symbol:s })),
+          ...by.map(s => ({ exchange:'bybit',   symbol:s }))
+        ];
       }
 
       currentIndex = 0;
-      cycleStart = Date.now();
+      cycleStart   = Date.now();
       updateStatus(`🔄 Scansione: 0/${allSymbols.length}`, true);
-
       await processBatch(iv, left, right, gEn, gTh, dEn, dTh);
     }
 
@@ -204,14 +224,14 @@
       const batch = allSymbols.slice(currentIndex, currentIndex + batchSize);
 
       for (let i = 0; i < batch.length; i++) {
-        const {exchange, symbol} = batch[i];
-        const fn = exchange === 'binance' ? getBinanceMaxGain : getBybitMaxGain;
+        const { exchange, symbol } = batch[i];
+        const fn  = exchange === 'binance' ? getBinanceMaxGain : getBybitMaxGain;
         const res = await fn(symbol, iv, left, right, gEn, gTh, dEn, dTh);
         if (res) upsertResult(res);
 
         const done = currentIndex + i + 1;
-        const pct = ((done / total) * 100).toFixed(1);
-        const sec = Math.floor((Date.now() - cycleStart) / 1000);
+        const pct  = ((done / total) * 100).toFixed(1);
+        const sec  = Math.floor((Date.now() - cycleStart) / 1000);
         updateStatus(`🔄 ${done}/${total} (${pct}%) – ${sec}s`, true);
 
         await new Promise(r => setTimeout(r, 50));
@@ -231,3 +251,4 @@
   </script>
 </body>
 </html>
+```
