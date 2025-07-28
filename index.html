@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Crypto Sniper – Pivot High &amp; Filtro Gain/Distance</title>
+  <title>Crypto Sniper – Pivot High & Filtri Persistenti</title>
   <style>
     body { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 0; padding: 10px; }
     .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; justify-content: center; }
@@ -38,7 +38,7 @@
 </head>
 <body>
 
-  <h1>📈 Crypto Sniper – Pivot High &amp; Filtri</h1>
+  <h1>📈 Crypto Sniper – Pivot High &amp; Filtri Persistenti</h1>
   <div id="status">⏸ In attesa di avvio…</div>
 
   <div class="controls">
@@ -55,10 +55,7 @@
       </select>
     </label>
 
-    <label>
-      <input type="checkbox" id="enableGain" checked/>
-      Abilita Filtro Gain
-    </label>
+    <label><input type="checkbox" id="enableGain" checked/> Abilita Filtro Gain</label>
     <label>
       Soglia Gain (%):
       <input type="number" id="threshold" value="3.0" step="0.1" min="0"/>
@@ -73,10 +70,7 @@
       <input type="number" id="pivotRight" value="1" step="1" min="1"/>
     </label>
 
-    <label>
-      <input type="checkbox" id="enableDist" checked/>
-      Abilita Distanza Pivot
-    </label>
+    <label><input type="checkbox" id="enableDist" checked/> Abilita Distanza Pivot</label>
     <label>
       Distanza max (%):
       <input type="number" id="distThreshold" value="5.0" step="0.1" min="0" max="100"/>
@@ -99,7 +93,10 @@
   let cycleStart    = null;
   let wakeLock      = null;
 
-  // === STATUS UI ===
+  // Mappa per risultati persistenti
+  const resultsMap = new Map();
+
+  // === UI STATUS ===
   function updateStatus(msg, active=false) {
     const el = document.getElementById('status');
     el.textContent = msg;
@@ -110,10 +107,10 @@
   async function requestWakeLock() {
     if ('wakeLock' in navigator) {
       try { wakeLock = await navigator.wakeLock.request('screen'); }
-      catch(e){ console.error('WakeLock:',e); }
+      catch(e){ console.error('WakeLock errore:', e); }
     }
   }
-  document.addEventListener('visibilitychange',()=>{
+  document.addEventListener('visibilitychange', ()=>{
     if (!document.hidden && wakeLock===null) requestWakeLock();
   });
 
@@ -128,7 +125,7 @@
 
   // === LINK HELPERS ===
   function getTradingViewInterval(iv) {
-    const m={ '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D' };
+    const m = { '1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D' };
     return m[iv]||'5';
   }
   function getTradingViewLink(sym, iv, ex) {
@@ -142,16 +139,13 @@
   function launchLink(u){ window.open(u,'_blank'); }
 
   // === ANALISI BINANCE ===
-  async function getBinanceMaxGain(sym, iv, left, right, gainEnabled, gainTh, distEnabled, distTh) {
+  async function getBinanceMaxGain(sym, iv, left, right, gainEn, gainTh, distEn, distTh) {
     try {
-      const res = await fetch(
-        `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${iv}&limit=6`
-      );
+      const res  = await fetch(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${iv}&limit=6`);
       const data = await res.json();
-      if (!Array.isArray(data)||data.length<6) return null;
+      if (!Array.isArray(data) || data.length<6) return null;
 
       let maxGain=-Infinity, best=null;
-      // cerco pivot & max gain
       for (let i=1;i<=5;i++){
         if (!isPivotHigh(data,i,left,right)) continue;
         const open=+data[i][1], close=+data[i][4];
@@ -162,54 +156,43 @@
         }
       }
       if (!best) return null;
+      if (gainEn && best.gain < gainTh) return null;
 
-      // filtro gain
-      if (gainEnabled && best.gain < gainTh) return null;
-
-      // distanza da pivot
       const currentClose = +data.at(-1)[4];
       const distPct = ((best.pivotVal - currentClose)/best.pivotVal)*100;
-      if (distEnabled) {
+      if (distEn) {
         if (currentClose >= best.pivotVal) return null;
         if (distPct > distTh) return null;
       }
 
-      // info 24h
       let dailyChange='N/A';
       try {
-        const info = await (await fetch(
-          `https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`
-        )).json();
+        const info = await (await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${sym}`)).json();
         dailyChange = parseFloat(info.priceChangePercent).toFixed(2);
       } catch{}
 
       return {
-        symbol: sym,
-        exchange: 'binance',
-        gain:       best.gain.toFixed(2),
-        dailyChange,
-        open:       best.open.toFixed(4),
-        close:      best.close.toFixed(4),
+        symbol: sym, exchange:'binance',
+        gain: best.gain.toFixed(2), dailyChange,
+        open: best.open.toFixed(4), close: best.close.toFixed(4),
         pivotValue: best.pivotVal.toFixed(4),
-        pivotTime:  new Date(best.pivotTs).toLocaleString(),
-        distance:   distPct.toFixed(2),
-        index:      best.idx,
-        timestamp:  new Date(data[best.idx][0]).toLocaleTimeString(),
+        pivotTime: new Date(best.pivotTs).toLocaleString(),
+        distance: distPct.toFixed(2),
+        index: best.idx,
+        timestamp: new Date(data[best.idx][0]).toLocaleTimeString(),
         tradingViewUrl: getTradingViewLink(sym,iv,'BINANCE'),
         exchangeUrl:    getExchangeLink(sym,'binance')
       };
-    } catch(e){ console.error('Binance err',e); return null; }
+    } catch(e){ console.error('Binance err:', e); return null; }
   }
 
   // === ANALISI BYBIT ===
-  async function getBybitMaxGain(sym, iv, left, right, gainEnabled, gainTh, distEnabled, distTh) {
+  async function getBybitMaxGain(sym, iv, left, right, gainEn, gainTh, distEn, distTh) {
     try {
-      const intMap={'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D'};
-      const interval = intMap[iv]||'5';
-      const res = await fetch(
-        `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${interval}&limit=6`
-      );
-      const j = await res.json();
+      const mapInt = {'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D'};
+      const interval = mapInt[iv]||'5';
+      const res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${interval}&limit=6`);
+      const j   = await res.json();
       if (j.retCode!==0||!j.result?.list) return null;
       const data = j.result.list.reverse();
 
@@ -218,97 +201,100 @@
         if (!isPivotHigh(data,i,left,right)) continue;
         const open=+data[i][1], close=+data[i][4];
         const gain=((close-open)/open)*100;
-        if (gain>maxGain){
+        if (gain>maxGain) {
           maxGain=gain;
           best={ idx:i, open, close, gain, pivotVal:+data[i][2], pivotTs:+data[i][0] };
         }
       }
       if (!best) return null;
-      if (gainEnabled && best.gain < gainTh) return null;
+      if (gainEn && best.gain < gainTh) return null;
 
       const currentClose = +data.at(-1)[4];
       const distPct = ((best.pivotVal - currentClose)/best.pivotVal)*100;
-      if (distEnabled) {
+      if (distEn) {
         if (currentClose >= best.pivotVal) return null;
         if (distPct > distTh) return null;
       }
 
-      // info 24h
       let dailyChange='N/A';
       try {
-        const info = await (await fetch(
-          `https://api.bybit.com/v5/market/ticker?category=spot&symbol=${sym}`
-        )).json();
-        if (info.retCode===0 && info.result.list.length){
+        const info = await (await fetch(`https://api.bybit.com/v5/market/ticker?category=spot&symbol=${sym}`)).json();
+        if (info.retCode===0 && info.result.list.length)
           dailyChange = (parseFloat(info.result.list[0].price24hPcnt)*100).toFixed(2);
-        }
       } catch{}
 
       return {
-        symbol: sym,
-        exchange: 'bybit',
-        gain:       best.gain.toFixed(2),
-        dailyChange,
-        open:       best.open.toFixed(4),
-        close:      best.close.toFixed(4),
+        symbol: sym, exchange:'bybit',
+        gain: best.gain.toFixed(2), dailyChange,
+        open: best.open.toFixed(4), close: best.close.toFixed(4),
         pivotValue: best.pivotVal.toFixed(4),
-        pivotTime:  new Date(best.pivotTs).toLocaleString(),
-        distance:   distPct.toFixed(2),
-        index:      best.idx,
-        timestamp:  new Date(data[best.idx][0]).toLocaleTimeString(),
+        pivotTime: new Date(best.pivotTs).toLocaleString(),
+        distance: distPct.toFixed(2),
+        index: best.idx,
+        timestamp: new Date(data[best.idx][0]).toLocaleTimeString(),
         tradingViewUrl: getTradingViewLink(sym,iv,'BYBIT'),
         exchangeUrl:    getExchangeLink(sym,'bybit')
       };
-    } catch(e){ console.error('Bybit err',e); return null; }
+    } catch(e){ console.error('Bybit err:', e); return null; }
   }
 
-  // === SIMBOLI ===
+  // === LISTE SIMBOLI ===
   async function getBinanceSymbols(){
     const j = await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json();
-    return j.symbols.filter(s=>s.symbol.endsWith("USDC")&&s.status=="TRADING").map(s=>s.symbol);
+    return j.symbols.filter(s=>s.symbol.endsWith("USDC")&&s.status==="TRADING").map(s=>s.symbol);
   }
   async function getBybitSymbols(){
     const j = await (await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot")).json();
-    return j.result?.list.filter(s=>s.symbol.endsWith("USDT")&&s.status=="Trading")
+    return j.result?.list.filter(s=>s.symbol.endsWith("USDT")&&s.status==="Trading")
                         .map(s=>s.symbol) || [];
   }
 
-  // === APPEND RISULTATI ===
-  function appendResult(c){
+  // === UPsert RESULT ===
+  function upsertResult(c) {
+    const key = `${c.exchange}|${c.symbol}`;
     const box = document.getElementById('results');
-    const el  = document.createElement('div');
-    el.className = `coin ${c.exchange}`;
-    el.innerHTML = `
-      <div class="exchange-badge ${c.exchange}">${c.exchange.toUpperCase()}</div>
-      <div><strong>💰 ${c.symbol}</strong></div>
-      <div>📊 Gain: <span class="gain">+${c.gain}%</span> | 24h: ${c.dailyChange}%</div>
-      <div>🟢 Open: ${c.open} | 🔴 Close: ${c.close}</div>
-      <div>⚓ PivotHigh: ${c.pivotValue} @ ${c.pivotTime}</div>
-      <div>⚡ Distance: ${c.distance}%</div>
-      <div>🕒 Candela n°${c.index} | ⏰ ${c.timestamp}</div>
-      <div style="margin-top:8px;">
-        <a class="tradingview-link" href="#" onclick="launchLink('${c.tradingViewUrl}');return false;">TradingView</a>
-        <a class="exchange-link ${c.exchange}" href="#" onclick="launchLink('${c.exchangeUrl}');return false;">Exchange</a>
-      </div>
-      <div class="screenshot-note"></div>
-    `;
-    box.appendChild(el);
+
+    if (resultsMap.has(key)) {
+      const el = resultsMap.get(key);
+      el.querySelector('.gain').textContent          = `+${c.gain}%`;
+      el.querySelector('.daily-change').textContent  = `${c.dailyChange}%`;
+      el.querySelector('.pivottime').textContent     = c.pivotTime;
+      el.querySelector('.distance-value').textContent= `${c.distance}%`;
+    } else {
+      const el = document.createElement('div');
+      el.className = `coin ${c.exchange}`;
+      el.innerHTML = `
+        <div class="exchange-badge ${c.exchange}">${c.exchange.toUpperCase()}</div>
+        <div><strong>💰 ${c.symbol}</strong></div>
+        <div>📊 Gain: <span class="gain">+${c.gain}%</span> | 24h: <span class="daily-change">${c.dailyChange}%</span></div>
+        <div>🟢 Open: ${c.open} | 🔴 Close: ${c.close}</div>
+        <div>⚓ PivotHigh: ${c.pivotValue} @ <span class="pivottime">${c.pivotTime}</span></div>
+        <div>⚡ Distance: <span class="distance-value">${c.distance}%</span></div>
+        <div>🕒 Candela n°${c.index} | ⏰ ${c.timestamp}</div>
+        <div style="margin-top:8px;">
+          <a class="tradingview-link" href="#" onclick="launchLink('${c.tradingViewUrl}');return false;">TradingView</a>
+          <a class="exchange-link ${c.exchange}" href="#" onclick="launchLink('${c.exchangeUrl}');return false;">Exchange</a>
+        </div>
+        <div class="screenshot-note"></div>
+      `;
+      resultsMap.set(key, el);
+      box.appendChild(el);
+    }
   }
 
   // === CICLO PRINCIPALE ===
   async function cycleProcessing(){
     const iv         = document.getElementById('timeframe').value;
-    const gainEnabled= document.getElementById('enableGain').checked;
+    const gainEn     = document.getElementById('enableGain').checked;
     const gainTh     = parseFloat(document.getElementById('threshold').value)||0;
     const left       = parseInt(document.getElementById('pivotLeft').value)||2;
     const right      = parseInt(document.getElementById('pivotRight').value)||1;
-    const distEnabled= document.getElementById('enableDist').checked;
+    const distEn     = document.getElementById('enableDist').checked;
     const distTh     = parseFloat(document.getElementById('distThreshold').value)||100;
 
-    document.getElementById('results').innerHTML = '';
     updateStatus(`⏳ Caricamento simboli…`, true);
 
-    if (!allSymbols.length){
+    if (!allSymbols.length) {
       const [bn,by] = await Promise.all([ getBinanceSymbols(), getBybitSymbols() ]);
       allSymbols = [
         ...bn.map(s=>({exchange:'binance',symbol:s})),
@@ -318,25 +304,20 @@
 
     currentIndex = 0;
     cycleStart   = Date.now();
-    updateStatus(`🔄 Inizio: 0/${allSymbols.length}`, true);
+    updateStatus(`🔄 Inizio scansione: 0/${allSymbols.length}`, true);
 
-    await processBatch(iv, left, right, gainEnabled, gainTh, distEnabled, distTh);
+    await processBatch(iv,left,right,gainEn,gainTh,distEn,distTh);
   }
 
-  async function processBatch(iv, left, right, gainEnabled, gainTh, distEnabled, distTh){
+  async function processBatch(iv,left,right,gainEn,gainTh,distEn,distTh){
     const total = allSymbols.length;
     const batch = allSymbols.slice(currentIndex, currentIndex + batchSize);
 
-    for(let i=0;i<batch.length;i++){
+    for (let i=0; i<batch.length; i++){
       const {exchange,symbol} = batch[i];
-      const fn = exchange==='binance'
-                 ? getBinanceMaxGain
-                 : getBybitMaxGain;
-      const res = await fn(symbol, iv,
-                           left, right,
-                           gainEnabled, gainTh,
-                           distEnabled, distTh);
-      if (res) appendResult(res);
+      const fn = exchange==='binance' ? getBinanceMaxGain : getBybitMaxGain;
+      const res = await fn(symbol, iv, left, right, gainEn, gainTh, distEn, distTh);
+      if (res) upsertResult(res);
 
       const done = currentIndex + i + 1;
       const pct  = ((done/total)*100).toFixed(1);
@@ -347,11 +328,10 @@
 
     currentIndex += batchSize;
     if (currentIndex < total) {
-      await processBatch(iv,left,right,gainEnabled,gainTh,distEnabled,distTh);
+      await processBatch(iv,left,right,gainEn,gainTh,distEn,distTh);
     } else {
-      const totalSec = Math.floor((Date.now()-cycleStart)/1000);
-      updateStatus(`✅ Fatto in ${totalSec}s, riavvio in 3s…`);
-      allSymbols = [];
+      const tot   = Math.floor((Date.now()-cycleStart)/1000);
+      updateStatus(`✅ Scansione completata in ${tot}s. Nuovo ciclo tra 3s…`);
       setTimeout(cycleProcessing,3000);
     }
   }
