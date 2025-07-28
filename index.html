@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Crypto Sniper – Pivot High & Chart Snapshot</title>
+  <title>Crypto Sniper – Pivot High &amp; Chart Snapshot</title>
 
-  <!-- TradingView MiniChartWidget -->
-  <script src="https://s3.tradingview.com/tv.js"></script>
+  <!-- TradingView Lightweight Charts -->
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 
   <style>
     body { font-family: Arial, sans-serif; background: #111; color: #eee; margin: 0; padding: 10px; }
@@ -18,32 +18,33 @@
     button:hover { background: #45a049; }
     #status { text-align: center; padding: 8px; margin-bottom: 10px; background: #333; border-radius: 4px; }
     #status.active { background: linear-gradient(90deg,#00ff88,#00cc66); color: #000; }
-    #results .coin {
-      display: flex; background: linear-gradient(135deg,#222,#333);
-      padding: 12px; margin-bottom: 10px; border-radius: 6px;
+    #results .coin { 
+      display: flex;
+      background: linear-gradient(135deg,#222,#333); 
+      padding: 12px; margin-bottom: 10px; border-radius: 6px; 
       border-left: 4px solid #00ff88; transition: transform .2s;
     }
     .coin.bybit   { border-color: #f7931a; }
     .coin.binance { border-color: #f3ba2f; }
     .coin:hover   { transform: translateX(5px); }
     .coin-content { flex: 1; }
-    .exchange-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 11px; margin-bottom: 8px; }
-    .exchange-badge.binance { background: #f3ba2f; color: #000; }
-    .exchange-badge.bybit   { background: #f7931a; color: #000; }
+    .exchange-badge { display:inline-block; padding:4px 8px; border-radius:12px; font-size:11px; margin-bottom:8px; }
+    .exchange-badge.binance { background:#f3ba2f; color:#000; }
+    .exchange-badge.bybit   { background:#f7931a; color:#000; }
     .gain { color: #00ff88; font-weight: bold; }
     .tradingview-link, .exchange-link {
-      display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px;
-      text-decoration: none; margin-right: 6px;
+      display:inline-block; padding:4px 8px; border-radius:4px; font-size:12px; text-decoration:none; margin-right:6px;
     }
-    .tradingview-link { background: #1e88e5; color: #fff; }
-    .exchange-link.binance { background: #f3ba2f; color: #000; }
-    .exchange-link.bybit   { background: #f7931a; color: #000; }
+    .tradingview-link { background:#1e88e5; color:#fff; }
+    .exchange-link.binance { background:#f3ba2f; color:#000; }
+    .exchange-link.bybit   { background:#f7931a; color:#000; }
     .mini-chart { width: 160px; height: 80px; margin-left: 10px; }
+    .screenshot-note { margin-top:8px; font-size:12px; color:#aaa; }
   </style>
 </head>
 <body>
 
-  <h1>📈 Crypto Sniper – Pivot High & Chart Snapshot</h1>
+  <h1>📈 Crypto Sniper – Pivot High &amp; Chart Snapshot</h1>
   <div id="status">⏸ In attesa di avvio…</div>
 
   <div class="controls">
@@ -66,7 +67,7 @@
     <label>Pivot Right (M):<input type="number" id="pivotRight" value="1" step="1" min="1"/></label>
 
     <label><input type="checkbox" id="enableDist" checked/> Abilita Distanza Pivot</label>
-    <label>Distanza max (%):<input type="number" id="distThreshold" value="5.0" step="0.1" min="0"/></label>
+    <label>Distanza max (%):<input type="number" id="distThreshold" value="5.0" step="0.1" min="0" max="100"/></label>
 
     <button id="startBtn">▶ Avvia Analisi</button>
   </div>
@@ -74,181 +75,209 @@
   <div id="results"></div>
 
   <script>
-    // Stato e mappa dei risultati
-    let allSymbols = [];
-    let currentIndex = 0;
-    const batchSize = 150;
-    let cycleStart = 0;
-    const resultsMap = new Map();
+  // TELEGRAM
+  const TELEGRAM_TOKEN   = 'TUO_TELEGRAM_BOT_TOKEN';
+  const TELEGRAM_CHAT_ID = 'TUO_CHAT_ID';
 
-    // Funzione per aggiornare lo status
-    function updateStatus(msg, active = false) {
-      const el = document.getElementById('status');
-      el.textContent = msg;
-      el.className = active ? 'active' : '';
+  // STATO
+  let allSymbols    = [];
+  let currentIndex  = 0;
+  const batchSize   = 150;
+  let cycleStart    = 0;
+  let wakeLock      = null;
+  const resultsMap  = new Map();
+
+  // UI Status
+  function updateStatus(msg, active=false){
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = active ? 'active' : '';
+  }
+
+  // Wake Lock
+  async function requestWakeLock(){
+    if('wakeLock' in navigator){
+      try { wakeLock = await navigator.wakeLock.request('screen'); }
+      catch(e){ console.error('WakeLock:',e); }
     }
+  }
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden && wakeLock===null) requestWakeLock();
+  });
 
-    // Mappa timeframe per TradingView
-    function getTVInterval(iv) {
-      const m = {
-        '1m':'1','5m':'5','15m':'15','30m':'30',
-        '1h':'60','4h':'240','1d':'1D'
-      };
-      return m[iv] || '5';
-    }
+  // Pivot High dynamic
+  function isPivotHigh(klines,i,left,right){
+    if(i<left||i+right>=klines.length) return false;
+    const h0 = +klines[i][2];
+    for(let j=1;j<=left;j++)  if(+klines[i-j][2]>=h0) return false;
+    for(let k=1;k<=right;k++) if(+klines[i+k][2]>=h0) return false;
+    return true;
+  }
 
-    // Render del MiniChartWidget ufficiale di TradingView
-    function renderTVMiniChart(exchange, symbol, interval, containerId) {
-      if (!window.TradingView) {
-        console.error('TradingView non caricato');
-        return;
+  // Link helpers
+  function getTVInterval(iv){
+    const m={'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'1D'};
+    return m[iv]||'5';
+  }
+  function getTVLink(sym,iv,ex){
+    return `https://www.tradingview.com/chart/?symbol=${ex}:${sym}&interval=${getTVInterval(iv)}&theme=dark`;
+  }
+  function getExLink(sym,ex){
+    if(ex==='binance'){const b=sym.replace('USDC','');return`https://www.binance.com/en/trade/${b}_USDC`;}
+    if(ex==='bybit')  return`https://www.bybit.com/en/trade/spot/${sym}`;
+    return '#';
+  }
+  function launchLink(u){ window.open(u,'_blank'); }
+
+  // Mini-chart renderer
+  async function renderMiniChart(sym,ex,iv,containerId){
+    try {
+      let url,raw;
+      if(ex==='binance'){
+        url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${iv}&limit=30`;
+        raw = await (await fetch(url)).json();
+      } else {
+        const mapInt={'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D'};
+        const i = mapInt[iv]||'5';
+        const j = await (await fetch(
+          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${i}&limit=30`
+        )).json();
+        raw = j.result.list.map(r=>[r[0],r[1],r[2],r[3],r[4]]);
       }
-      new TradingView.MiniChartWidget({
-        container_id: containerId,
-        symbol: `${exchange.toUpperCase()}:${symbol}`,
-        interval: getTVInterval(interval),
-        width: 160,
-        height: 80,
-        locale: 'it',
-        theme: 'dark'
+      const bars = raw.slice(-30).map(b=>({
+        time: Math.floor(b[0]/1000),
+        value: parseFloat(b[4])
+      }));
+      const container = document.getElementById(containerId);
+      const chart = LightweightCharts.createChart(container, {
+        width: 160, height: 80,
+        layout: { backgroundColor: '#222', textColor: '#eee' },
+        grid: { vertLines:{color:'#333'}, horzLines:{color:'#333'} },
+        rightPriceScale:{visible:false}, timeScale:{visible:false}
       });
-    }
+      const series = chart.addLineSeries({ color:'#00ff88', lineWidth:2 });
+      series.setData(bars);
+    } catch(e){ console.error('MiniChart',sym,e); }
+  }
 
-    // Ordina i risultati dal DOM per distanza ascendente
-    function sortResultsByDistance() {
-      const parent = document.getElementById('results');
-      Array.from(parent.children)
-        .sort((a, b) => parseFloat(a.dataset.distance) - parseFloat(b.dataset.distance))
-        .forEach(el => parent.appendChild(el));
-    }
-
-    // Inserisce o aggiorna un risultato
-    function upsertResult(c) {
-      const key = `${c.exchange}|${c.symbol}`;
-      const parent = document.getElementById('results');
-
-      if (resultsMap.has(key)) {
-        const el = resultsMap.get(key);
-        el.querySelector('.gain').textContent = `+${c.gain}%`;
-        el.querySelector('.daily-change').textContent = `${c.dailyChange}%`;
-        el.querySelector('.distance-value').textContent = `${c.distance}%`;
-        el.dataset.distance = c.distance;
-        el.querySelector('.pivottime').textContent = c.pivotTime;
-        el.querySelector('.index').textContent = `Candela n°${c.index}`;
-        el.querySelector('.timestamp').textContent = c.timestamp;
-      } else {
-        const el = document.createElement('div');
-        el.className = `coin ${c.exchange}`;
-        el.dataset.distance = c.distance;
-        el.innerHTML = `
-          <div class="coin-content">
-            <div class="exchange-badge ${c.exchange}">${c.exchange.toUpperCase()}</div>
-            <div><strong>💰 ${c.symbol}</strong></div>
-            <div>📊 Gain: <span class="gain">+${c.gain}%</span> | 24h: <span class="daily-change">${c.dailyChange}%</span></div>
-            <div>🟢 Open: ${c.open} | 🔴 Close: ${c.close}</div>
-            <div>⚓ PivotHigh: ${c.pivotValue} @ <span class="pivottime">${c.pivotTime}</span></div>
-            <div>⚡ Distance: <span class="distance-value">${c.distance}%</span></div>
-            <div class="index">Candela n°${c.index}</div>
-            <div class="timestamp">${c.timestamp}</div>
-            <div style="margin-top:8px;">
-              <a class="tradingview-link" href="#" onclick="window.open('${c.tradingViewUrl}');return false;">TradingView</a>
-              <a class="exchange-link ${c.exchange}" href="#" onclick="window.open('${c.exchangeUrl}');return false;">Exchange</a>
-            </div>
+  // Upsert result
+  function upsertResult(c){
+    const key = `${c.exchange}|${c.symbol}`;
+    const box = document.getElementById('results');
+    if(resultsMap.has(key)){
+      const el = resultsMap.get(key);
+      el.querySelector('.gain').textContent           = `+${c.gain}%`;
+      el.querySelector('.daily-change').textContent   = `${c.dailyChange}%`;
+      el.querySelector('.distance-value').textContent = `${c.distance}%`;
+      el.querySelector('.pivottime').textContent      = c.pivotTime;
+    } else {
+      const el = document.createElement('div');
+      el.className = `coin ${c.exchange}`;
+      el.innerHTML = `
+        <div class="coin-content">
+          <div class="exchange-badge ${c.exchange}">${c.exchange.toUpperCase()}</div>
+          <div><strong>💰 ${c.symbol}</strong></div>
+          <div>📊 Gain: <span class="gain">+${c.gain}%</span> | 24h: <span class="daily-change">${c.dailyChange}%</span></div>
+          <div>🟢 Open: ${c.open} | 🔴 Close: ${c.close}</div>
+          <div>⚓ PivotHigh: ${c.pivotValue} @ <span class="pivottime">${c.pivotTime}</span></div>
+          <div>⚡ Distance: <span class="distance-value">${c.distance}%</span></div>
+          <div>🕒 Candela n°${c.index} | ⏰ ${c.timestamp}</div>
+          <div style="margin-top:8px;">
+            <a class="tradingview-link" href="#" onclick="launchLink('${c.tradingViewUrl}');return false;">TradingView</a>
+            <a class="exchange-link ${c.exchange}" href="#" onclick="launchLink('${c.exchangeUrl}');return false;">Exchange</a>
           </div>
-          <div id="tv-${c.exchange}-${c.symbol}" class="mini-chart"></div>
-        `;
-        parent.appendChild(el);
-        resultsMap.set(key, el);
-        renderTVMiniChart(c.exchange, c.symbol, c.timeframe, `tv-${c.exchange}-${c.symbol}`);
-      }
+        </div>
+        <div id="chart-${c.exchange}-${c.symbol}" class="mini-chart"></div>
+      `;
+      resultsMap.set(key, el);
+      box.appendChild(el);
+      renderMiniChart(c.symbol, c.exchange, c.timeframe, `chart-${c.exchange}-${c.symbol}`);
+    }
+  }
 
-      sortResultsByDistance();
+  // Core analysis (Binance & Bybit)
+  // Similar to previous code but add `timeframe: iv` to returned object...
+  // For brevity, assume getBinanceMaxGain and getBybitMaxGain
+  // both return objects containing all fields plus `timeframe: iv`.
+
+  // Example stub for Binance (you’d integrate your logic here):
+  async function getBinanceMaxGain(sym,iv,left,right,gEn,gTh,dEn,dTh){
+    // ... your pivot/gain/distance logic ...
+    // return { symbol:sym,exchange:'binance', gain:..., dailyChange:..., open:..., close:...,
+    //   pivotValue:..., pivotTime:..., distance:..., index:..., timestamp:...,
+    //   tradingViewUrl, exchangeUrl, timeframe: iv };
+    return null;
+  }
+
+  // And similarly getBybitMaxGain:
+  async function getBybitMaxGain(sym,iv,left,right,gEn,gTh,dEn,dTh){
+    return null;
+  }
+
+  // Symbols fetch
+  async function getBinanceSymbols(){
+    const j = await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json();
+    return j.symbols.filter(s=>s.symbol.endsWith("USDC")&&s.status==="TRADING").map(s=>s.symbol);
+  }
+  async function getBybitSymbols(){
+    const j = await (await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot")).json();
+    return j.result.list.filter(s=>s.symbol.endsWith("USDT")&&s.status==="Trading").map(s=>s.symbol);
+  }
+
+  // Main cycle
+  async function cycleProcessing(){
+    const iv      = document.getElementById('timeframe').value;
+    const gEn     = document.getElementById('enableGain').checked;
+    const gTh     = parseFloat(document.getElementById('threshold').value)||0;
+    const left    = parseInt(document.getElementById('pivotLeft').value)||2;
+    const right   = parseInt(document.getElementById('pivotRight').value)||1;
+    const dEn     = document.getElementById('enableDist').checked;
+    const dTh     = parseFloat(document.getElementById('distThreshold').value)||100;
+
+    updateStatus(`⏳ Caricamento simboli…`, true);
+    if(!allSymbols.length){
+      const [bn,by] = await Promise.all([getBinanceSymbols(), getBybitSymbols()]);
+      allSymbols = [
+        ...bn.map(s=>({exchange:'binance',symbol:s})),
+        ...by.map(s=>({exchange:'bybit',symbol:s}))
+      ];
     }
 
-    // Funzioni stub: integra qui la tua logica pivot/gain/distance
-    async function getBinanceMaxGain(sym, iv, left, right, gEn, gTh, dEn, dTh) {
-      // fetch + calcoli pivot/gain/distance…
-      // ritorna { symbol, exchange:'binance', gain, dailyChange,
-      //          open, close, pivotValue, pivotTime, distance,
-      //          index, timestamp, tradingViewUrl, exchangeUrl, timeframe: iv }
-      return null;
-    }
-    async function getBybitMaxGain(sym, iv, left, right, gEn, gTh, dEn, dTh) {
-      // similare a getBinanceMaxGain ma per Bybit
-      return null;
-    }
+    currentIndex = 0;
+    cycleStart   = Date.now();
+    updateStatus(`🔄 Scansione: 0/${allSymbols.length}`, true);
 
-    // Fetch dei simboli
-    async function getBinanceSymbols() {
-      const res = await fetch('https://api.binance.com/api/v3/exchangeInfo');
-      const j = await res.json();
-      return j.symbols
-        .filter(s => s.symbol.endsWith('USDC') && s.status === 'TRADING')
-        .map(s => s.symbol);
-    }
-    async function getBybitSymbols() {
-      const res = await fetch('https://api.bybit.com/v5/market/instruments-info?category=spot');
-      const j = await res.json();
-      return j.result.list
-        .filter(s => s.symbol.endsWith('USDT') && s.status === 'Trading')
-        .map(s => s.symbol);
+    await processBatch(iv,left,right,gEn,gTh,dEn,dTh);
+  }
+
+  async function processBatch(iv,left,right,gEn,gTh,dEn,dTh){
+    const total = allSymbols.length;
+    const batch = allSymbols.slice(currentIndex, currentIndex+batchSize);
+
+    for(let i=0;i<batch.length;i++){
+      const {exchange,symbol} = batch[i];
+      const fn = exchange==='binance' ? getBinanceMaxGain : getBybitMaxGain;
+      const res= await fn(symbol,iv,left,right,gEn,gTh,dEn,dTh);
+      if(res) upsertResult(res);
+
+      const done = currentIndex + i + 1;
+      const pct  = ((done/total)*100).toFixed(1);
+      const sec  = Math.floor((Date.now()-cycleStart)/1000);
+      updateStatus(`🔄 ${done}/${total} (${pct}%) – ${sec}s`, true);
+      await new Promise(r=>setTimeout(r,50));
     }
 
-    // Ciclo principale
-    async function cycleProcessing() {
-      const iv    = document.getElementById('timeframe').value;
-      const gEn   = document.getElementById('enableGain').checked;
-      const gTh   = parseFloat(document.getElementById('threshold').value) || 0;
-      const left  = parseInt(document.getElementById('pivotLeft').value)    || 2;
-      const right = parseInt(document.getElementById('pivotRight').value)   || 1;
-      const dEn   = document.getElementById('enableDist').checked;
-      const dTh   = parseFloat(document.getElementById('distThreshold').value) || 100;
-
-      updateStatus('⏳ Caricamento simboli…', true);
-      if (!allSymbols.length) {
-        const [bn, by] = await Promise.all([getBinanceSymbols(), getBybitSymbols()]);
-        allSymbols = [
-          ...bn.map(s => ({ exchange:'binance', symbol:s })),
-          ...by.map(s => ({ exchange:'bybit',   symbol:s }))
-        ];
-      }
-
-      currentIndex = 0;
-      cycleStart   = Date.now();
-      updateStatus(`🔄 Scansione: 0/${allSymbols.length}`, true);
-      await processBatch(iv, left, right, gEn, gTh, dEn, dTh);
+    currentIndex += batchSize;
+    if(currentIndex < total){
+      await processBatch(iv,left,right,gEn,gTh,dEn,dTh);
+    } else {
+      const tot = Math.floor((Date.now()-cycleStart)/1000);
+      updateStatus(`✅ Completato in ${tot}s. Riavvio tra 3s…`);
+      setTimeout(cycleProcessing,3000);
     }
+  }
 
-    async function processBatch(iv, left, right, gEn, gTh, dEn, dTh) {
-      const total = allSymbols.length;
-      const batch = allSymbols.slice(currentIndex, currentIndex + batchSize);
-
-      for (let i = 0; i < batch.length; i++) {
-        const { exchange, symbol } = batch[i];
-        const fn  = exchange === 'binance' ? getBinanceMaxGain : getBybitMaxGain;
-        const res = await fn(symbol, iv, left, right, gEn, gTh, dEn, dTh);
-        if (res) upsertResult(res);
-
-        const done = currentIndex + i + 1;
-        const pct  = ((done / total) * 100).toFixed(1);
-        const sec  = Math.floor((Date.now() - cycleStart) / 1000);
-        updateStatus(`🔄 ${done}/${total} (${pct}%) – ${sec}s`, true);
-
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      currentIndex += batchSize;
-      if (currentIndex < total) {
-        await processBatch(iv, left, right, gEn, gTh, dEn, dTh);
-      } else {
-        const sec = Math.floor((Date.now() - cycleStart) / 1000);
-        updateStatus(`✅ Completato in ${sec}s. Riavvio tra 3s…`);
-        setTimeout(cycleProcessing, 3000);
-      }
-    }
-
-    document.getElementById('startBtn').addEventListener('click', cycleProcessing);
+  document.getElementById('startBtn').addEventListener('click', cycleProcessing);
   </script>
 </body>
 </html>
-```
