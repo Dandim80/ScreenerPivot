@@ -31,9 +31,11 @@
       display:inline-block; padding:4px 8px; border-radius:4px; font-size:12px; text-decoration:none; margin-right:6px;
     }
     .tradingview-link { background:#1e88e5; color:#fff; }
+    .tradingview-link.tradingview-checked { background:#ff5722 !important; }
     .exchange-link.binance { background:#f3ba2f; color:#000; }
     .exchange-link.bybit { background:#f7931a; color:#000; }
     .alert-label { display:flex; align-items:center; gap:4px; margin-top:8px; font-size:13px; }
+    .alert-indicator { margin-left:4px; }
     .screenshot-note { margin-top:8px; font-size:12px; color:#aaa; }
   </style>
 </head>
@@ -92,7 +94,9 @@
     let cycleStart = null;
     let wakeLock = null;
     const resultsMap = new Map();
-    const alerted = new Set(); // traccia simboli già notificati
+    const alerted = new Set();          // simboli per cui l'allarme è già inviato
+    const checkedSymbols = new Set();   // simboli già cliccati su TradingView
+    let cycleCount = 0;                 // contatore cicli
 
     // === UI STATUS ===
     function updateStatus(msg, active = false) {
@@ -169,9 +173,9 @@
 
     // === CHECK E INVIO ALLARME ===
     function checkAlert(c) {
-      const key = `${c.exchange}|${c.symbol}`;
-      const el = resultsMap.get(key);
-      const cb = el.querySelector('.alert-checkbox');
+      const key   = `${c.exchange}|${c.symbol}`;
+      const el    = resultsMap.get(key);
+      const cb    = el.querySelector('.alert-checkbox');
       const alertTh = parseFloat(document.getElementById('alertThreshold').value) || 0;
       const distNum = parseFloat(c.distance);
 
@@ -182,10 +186,11 @@
                     `<a href="${c.tradingViewUrl}">TradingView</a>`;
         sendTelegram(msg);
         alerted.add(key);
+        el.querySelector('.alert-indicator').textContent = '✅';
       }
     }
 
-    // === UPsert RESULT & PER-RESULT ALERT ===
+    // === UPsert RESULT & PER-RESULT ALERT/TRADINGVIEW CLICK ===
     function upsertResult(c) {
       const key = `${c.exchange}|${c.symbol}`;
       const box = document.getElementById('results');
@@ -193,10 +198,11 @@
 
       if (resultsMap.has(key)) {
         el = resultsMap.get(key);
-        el.querySelector('.gain').textContent = `+${c.gain}%`;
-        el.querySelector('.daily-change').textContent = `${c.dailyChange}%`;
-        el.querySelector('.pivottime').textContent = c.pivotTime;
-        el.querySelector('.distance-value').textContent = `${c.distance}%`;
+        el.querySelector('.gain').textContent          = `+${c.gain}%`;
+        el.querySelector('.daily-change').textContent  = `${c.dailyChange}%`;
+        el.querySelector('.pivottime').textContent     = c.pivotTime;
+        el.querySelector('.distance-value').textContent= `${c.distance}%`;
+        el.querySelector('.alert-indicator').textContent = alerted.has(key) ? '✅' : '❌';
       } else {
         el = document.createElement('div');
         el.className = `coin ${c.exchange}`;
@@ -209,22 +215,46 @@
           <div>⚡ Distance: <span class="distance-value">${c.distance}%</span></div>
           <div>🕒 Candela n°${c.index} | ⏰ ${c.timestamp}</div>
           <div style="margin-top:8px;">
-            <a class="tradingview-link" href="#" onclick="launchLink('${c.tradingViewUrl}');return false;">TradingView</a>
-            <a class="exchange-link ${c.exchange}" href="#" onclick="launchLink('${c.exchangeUrl}');return false;">Exchange</a>
+            <a class="tradingview-link" href="#">TradingView</a>
+            <a class="exchange-link ${c.exchange}" href="#">Exchange</a>
           </div>
           <label class="alert-label">
             <input type="checkbox" class="alert-checkbox" /> Allarme
           </label>
+          <div>Alert inviata: <span class="alert-indicator">${alerted.has(key)?'✅':'❌'}</span></div>
           <div class="screenshot-note"></div>
         `;
+        // TradingView button click
+        const tvBtn = el.querySelector('.tradingview-link');
+        tvBtn.addEventListener('click', e => {
+          e.preventDefault();
+          launchLink(c.tradingViewUrl);
+          checkedSymbols.add(key);
+          tvBtn.classList.add('tradingview-checked');
+        });
+        if (checkedSymbols.has(key)) tvBtn.classList.add('tradingview-checked');
+
+        // Exchange button click
+        const exBtn = el.querySelector('.exchange-link');
+        exBtn.addEventListener('click', e => {
+          e.preventDefault();
+          launchLink(c.exchangeUrl);
+        });
+
+        // Alert checkbox toggle
         el.querySelector('.alert-checkbox')
           .addEventListener('change', e => {
-            if (!e.target.checked) alerted.delete(key);
+            if (!e.target.checked) {
+              alerted.delete(key);
+              el.querySelector('.alert-indicator').textContent = '❌';
+            }
           });
+
         resultsMap.set(key, el);
         box.appendChild(el);
       }
 
+      // riordina e controlla alert
       sortResults();
       checkAlert(c);
     }
@@ -238,17 +268,17 @@
         let maxGain = -Infinity, best = null;
         for (let i = 1; i <= 5; i++) {
           if (!isPivotHigh(data, i, left, right)) continue;
-          const open = +data[i][1], close = +data[i][4];
-          const gain = ((close - open) / open) * 100;
+          const open  = +data[i][1], close = +data[i][4];
+          const gain  = ((close - open) / open) * 100;
           if (gain > maxGain) {
             maxGain = gain;
-            best = { idx: i, open, close, gain, pivotVal: +data[i][2], pivotTs: +data[i][0] };
+            best    = { idx: i, open, close, gain, pivotVal:+data[i][2], pivotTs:+data[i][0] };
           }
         }
         if (!best) return null;
         if (gainEn && best.gain < gainTh) return null;
         const currentClose = +data.at(-1)[4];
-        const distPct = ((best.pivotVal - currentClose) / best.pivotVal) * 100;
+        const distPct      = ((best.pivotVal - currentClose) / best.pivotVal) * 100;
         if (distEn) {
           if (currentClose >= best.pivotVal) return null;
           if (distPct > distTh) return null;
@@ -259,46 +289,43 @@
           dailyChange = parseFloat(info.priceChangePercent).toFixed(2);
         } catch{}
         return {
-          symbol: sym, exchange: 'binance',
+          symbol: sym, exchange:'binance',
           gain: best.gain.toFixed(2), dailyChange,
-          open: best.open.toFixed(4), close: best.close.toFixed(4),
+          open: best.open.toFixed(4), close:best.close.toFixed(4),
           pivotValue: best.pivotVal.toFixed(4),
           pivotTime: new Date(best.pivotTs).toLocaleString(),
           distance: distPct.toFixed(2),
           index: best.idx,
           timestamp: new Date(data[best.idx][0]).toLocaleTimeString(),
           tradingViewUrl: getTradingViewLink(sym, iv, 'BINANCE'),
-          exchangeUrl: getExchangeLink(sym, 'binance')
+          exchangeUrl:    getExchangeLink(sym, 'binance')
         };
-      } catch (e) {
-        console.error('Binance err:', e);
-        return null;
-      }
+      } catch(e){ console.error('Binance err:', e); return null; }
     }
 
     // === ANALISI BYBIT ===
     async function getBybitMaxGain(sym, iv, left, right, gainEn, gainTh, distEn, distTh) {
       try {
-        const mapInt = {'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D'};
-        const interval = mapInt[iv] || '5';
-        const res = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${interval}&limit=6`);
-        const j = await res.json();
-        if (j.retCode !== 0 || !j.result?.list) return null;
-        const data = j.result.list.reverse();
+        const mapInt   = {'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','1d':'D'};
+        const interval = mapInt[iv]||'5';
+        const res      = await fetch(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${sym}&interval=${interval}&limit=6`);
+        const j        = await res.json();
+        if (j.retCode!==0||!j.result?.list) return null;
+        const data     = j.result.list.reverse();
         let maxGain = -Infinity, best = null;
         for (let i = 1; i <= 5; i++) {
           if (!isPivotHigh(data, i, left, right)) continue;
-          const open = +data[i][1], close = +data[i][4];
-          const gain = ((close - open) / open) * 100;
+          const open  = +data[i][1], close = +data[i][4];
+          const gain  = ((close - open) / open) * 100;
           if (gain > maxGain) {
             maxGain = gain;
-            best = { idx: i, open, close, gain, pivotVal: +data[i][2], pivotTs: +data[i][0] };
+            best    = { idx: i, open, close, gain, pivotVal:+data[i][2], pivotTs:+data[i][0] };
           }
         }
         if (!best) return null;
         if (gainEn && best.gain < gainTh) return null;
         const currentClose = +data.at(-1)[4];
-        const distPct = ((best.pivotVal - currentClose) / best.pivotVal) * 100;
+        const distPct      = ((best.pivotVal - currentClose) / best.pivotVal) * 100;
         if (distEn) {
           if (currentClose >= best.pivotVal) return null;
           if (distPct > distTh) return null;
@@ -306,96 +333,108 @@
         let dailyChange = 'N/A';
         try {
           const info = await (await fetch(`https://api.bybit.com/v5/market/ticker?category=spot&symbol=${sym}`)).json();
-          if (info.retCode === 0 && info.result.list.length)
-            dailyChange = (parseFloat(info.result.list[0].price24hPcnt) * 100).toFixed(2);
+          if (info.retCode===0 && info.result.list.length)
+            dailyChange = (parseFloat(info.result.list[0].price24hPcnt)*100).toFixed(2);
         } catch{}
         return {
-          symbol: sym, exchange: 'bybit',
+          symbol: sym, exchange:'bybit',
           gain: best.gain.toFixed(2), dailyChange,
-          open: best.open.toFixed(4), close: best.close.toFixed(4),
+          open: best.open.toFixed(4), close:best.close.toFixed(4),
           pivotValue: best.pivotVal.toFixed(4),
           pivotTime: new Date(best.pivotTs).toLocaleString(),
           distance: distPct.toFixed(2),
           index: best.idx,
           timestamp: new Date(data[best.idx][0]).toLocaleTimeString(),
           tradingViewUrl: getTradingViewLink(sym, iv, 'BYBIT'),
-          exchangeUrl: getExchangeLink(sym, 'bybit')
+          exchangeUrl:    getExchangeLink(sym, 'bybit')
         };
-      } catch (e) {
-        console.error('Bybit err:', e);
-        return null;
-      }
+      } catch(e){ console.error('Bybit err:', e); return null; }
     }
 
-    // === SIMBOLI ===
+        // === LISTE SIMBOLI ===
     async function getBinanceSymbols() {
-      const j = await (await fetch("https://api.binance.com/api/v3/exchangeInfo")).json();
+      const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
+      const j   = await res.json();
       return j.symbols
-        .filter(s => s.symbol.endsWith("USDC") && s.status === "TRADING")
+        .filter(s => s.quoteAsset === 'USDC' && s.status === 'TRADING')
         .map(s => s.symbol);
     }
+
     async function getBybitSymbols() {
-      const j = await (await fetch("https://api.bybit.com/v5/market/instruments-info?category=spot")).json();
-      return j.result?.list
-        .filter(s => s.symbol.endsWith("USDT") && s.status === "Trading")
-        .map(s => s.symbol) || [];
+      const res = await fetch("https://api.bybit.com/v5/market/symbols?category=spot");
+      const j   = await res.json();
+      return j.result.list
+        .filter(s => s.quoteCurrency === 'USDC' && s.status === 'Trading')
+        .map(s => s.name);
     }
 
-    // === CICLO PRINCIPALE ===
-    async function cycleProcessing() {
-      const iv     = document.getElementById('timeframe').value;
-      const gainEn = document.getElementById('enableGain').checked;
-      const gainTh = parseFloat(document.getElementById('threshold').value) || 0;
-      const left   = parseInt(document.getElementById('pivotLeft').value) || 1;
-      const right  = parseInt(document.getElementById('pivotRight').value) || 3;
-      const distEn = document.getElementById('enableDist').checked;
-      const distTh = parseFloat(document.getElementById('distThreshold').value) || 100;
+    // === AVVIO CICLO PRINCIPALE ===
+    async function start() {
+      document.getElementById('startBtn').disabled = true;
+      updateStatus('⏳ Inizializzo simboli...', true);
 
-      updateStatus(`⏳ Caricamento simboli…`, true);
-      if (!allSymbols.length) {
-        const [bn, by] = await Promise.all([ getBinanceSymbols(), getBybitSymbols() ]);
-        allSymbols = [
-          ...bn.map(s=>({exchange:'binance',symbol:s})),
-          ...by.map(s=>({exchange:'bybit',symbol:s}))
-        ];
-      }
+      const [bin, bit] = await Promise.all([getBinanceSymbols(), getBybitSymbols()]);
+      allSymbols = [
+        ...bin.map(sym => ({ symbol: sym, exchange: 'binance' })),
+        ...bit.map(sym => ({ symbol: sym, exchange: 'bybit' }))
+      ];
+
       currentIndex = 0;
-      cycleStart = Date.now();
-      updateStatus(`🔄 Inizio scansione: 0/${allSymbols.length}`, true);
-      await processBatch(iv, left, right, gainEn, gainTh, distEn, distTh);
+      cycleCount   = 0;
+      alerted.clear();
+      checkedSymbols.clear();
+      resultsMap.clear();
+      document.getElementById('results').innerHTML = '';
+
+      await requestWakeLock();
+      tick();
     }
 
-    async function processBatch(iv, left, right, gainEn, gainTh, distEn, distTh) {
-      const total = allSymbols.length;
-      const batch = allSymbols.slice(currentIndex, currentIndex + batchSize);
+    async function tick() {
+      const iv       = document.getElementById('timeframe').value;
+      const gainEn   = document.getElementById('enableGain').checked;
+      const gainTh   = parseFloat(document.getElementById('threshold').value) || 0;
+      const left     = parseInt(document.getElementById('pivotLeft').value);
+      const right    = parseInt(document.getElementById('pivotRight').value);
+      const distEn   = document.getElementById('enableDist').checked;
+      const distTh   = parseFloat(document.getElementById('distThreshold').value) || 0;
+      const batchEnd = Math.min(currentIndex + batchSize, allSymbols.length);
+      const batch    = allSymbols.slice(currentIndex, batchEnd);
 
-      for (let i = 0; i < batch.length; i++) {
-        const { exchange, symbol } = batch[i];
-        const fn = exchange === 'binance' ? getBinanceMaxGain : getBybitMaxGain;
-        const res = await fn(symbol, iv, left, right, gainEn, gainTh, distEn, distTh);
-        if (res) upsertResult(res);
+      if (currentIndex === 0) cycleStart = Date.now();
 
-        const done = currentIndex + i + 1;
-        const pct  = ((done / total) * 100).toFixed(1);
-        const secs = Math.floor((Date.now() - cycleStart) / 1000);
-        updateStatus(`🔄 ${done}/${total} (${pct}%) – ${secs}s`, true);
+      const tasks = batch.map(({ symbol, exchange }) => {
+        if (exchange === 'binance') {
+          return getBinanceMaxGain(symbol, iv, left, right, gainEn, gainTh, distEn, distTh);
+        } else {
+          return getBybitMaxGain(symbol, iv, left, right, gainEn, gainTh, distEn, distTh);
+        }
+      });
 
-        await new Promise(r => setTimeout(r, 50));
+      const results = await Promise.all(tasks);
+      results.filter(r => r).forEach(r => upsertResult(r));
+
+      currentIndex = batchEnd;
+      const perc    = ((currentIndex / allSymbols.length) * 100).toFixed(2);
+      updateStatus(`🔄 Ciclo ${cycleCount + 1} – ${currentIndex}/${allSymbols.length} (${perc}%)`, true);
+
+      if (currentIndex >= allSymbols.length) {
+        cycleCount++;
+        currentIndex = 0;
       }
 
-      currentIndex += batchSize;
-      if (currentIndex < total) {
-        await processBatch(iv, left, right, gainEn, gainTh, distEn, distTh);
-      } else {
-        const tot = Math.floor((Date.now() - cycleStart) / 1000);
-        updateStatus(`✅ Scansione completata in ${tot}s. Nuovo ciclo tra 3s…`);
-        setTimeout(cycleProcessing, 3000);
-      }
+      // calcola delay per tenere il timing del timeframe
+      const intervalMap = {
+        '1m': 60000, '5m': 300000, '15m': 900000,
+        '30m': 1800000, '1h': 3600000, '4h': 14400000, '1d': 86400000
+      };
+      const totalBatches = Math.ceil(allSymbols.length / batchSize);
+      const delay = (intervalMap[iv] || 300000) / totalBatches;
+
+      setTimeout(tick, delay);
     }
 
-    // === START ===
-    document.getElementById('startBtn').addEventListener('click', cycleProcessing);
+    document.getElementById('startBtn').addEventListener('click', start);
   </script>
 </body>
 </html>
-```
